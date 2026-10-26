@@ -12,7 +12,7 @@ func readExactly(_ count: Int) -> Data? {
   }
   return data
 }
-func reply(_ body: [String: Bool]) {
+func reply(_ body: [String: Any]) {
   guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
   var length = UInt32(data.count).littleEndian
   withUnsafeBytes(of: &length) { FileHandle.standardOutput.write(Data($0)) }
@@ -37,20 +37,26 @@ let digest = Array(SHA256.hash(data: der).prefix(16))
 let alphabet = Array("abcdefghijklmnop")
 let id = String(digest.flatMap { [alphabet[Int($0 >> 4)], alphabet[Int($0 & 15)]] })
 guard CommandLine.arguments.dropFirst().first == "chrome-extension://\(id)/" else { exit(1) }
+reply([
+  "kind": "ready", "browserPID": getppid(),
+  "appRunning": !NSRunningApplication.runningApplications(withBundleIdentifier: appID).isEmpty,
+])
 while let header = readExactly(4) {
   let length = header.enumerated().reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * $1.offset) }
   guard length > 0, length <= 8192, let message = readExactly(Int(length)),
     let object = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
-    Set(object.keys) == Set(["payload", "mac"]),
-    let payload = object["payload"] as? String, payload.count <= 4096,
-    let mac = object["mac"] as? String, mac.count == 64,
-    mac.range(of: "^[a-fA-F0-9]+$", options: .regularExpression) != nil
+    Set(object.keys) == Set(["version", "nonce", "ciphertext"]),
+    object["version"] as? Int == 2,
+    let nonce = object["nonce"] as? String, nonce.count == 16,
+    Data(base64Encoded: nonce)?.count == 12,
+    let ciphertext = object["ciphertext"] as? String, ciphertext.count <= 5500,
+    let sealed = Data(base64Encoded: ciphertext), sealed.count >= 16
   else { exit(1) }
   let appRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: appID).isEmpty
   if appRunning, let string = String(data: message, encoding: .utf8) {
-    // Local IPC only. The main app verifies the HMAC and payload itself.
+    // Opaque authenticated ciphertext only. The bridge never has the pairing key.
     DistributedNotificationCenter.default().postNotificationName(
-      Notification.Name("local.daybook.videoHeartbeat.v1"), object: string, userInfo: nil,
+      Notification.Name("local.daybook.mediaHeartbeat.v2"), object: string, userInfo: nil,
       deliverImmediately: true)
   }
   reply(["forwarded": appRunning, "appRunning": appRunning])

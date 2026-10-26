@@ -2,8 +2,14 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Daybook Video</title>
+    <title>Daybook Helper</title>
     <style>
+      :root { color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #1b1d1c !important; color: #e8ebe0 !important; }
+        #status { color: #7abfa8 !important; }
+        small { color: #a6b0a6 !important; }
+      }
       body {
         font: 16px system-ui;
         background: #f5f3ed;
@@ -38,11 +44,16 @@
     </style>
   </head>
   <body>
-    <h1>Daybook Video</h1>
-    <p>Count real video playback, even while you work in another app.</p>
+    <h1>Daybook Helper</h1>
+    <p>Visible video and background music, tracked only on this Mac.</p>
     <ol>
-      <li>Install the local bridge using the included setup script.</li>
-      <li>In Daybook → Settings, copy your video pairing code.</li>
+      <li>
+        Connect the local bridge in Daybook → Settings → Install Daybook Helper.
+      </li>
+      <li>
+        In Daybook → Settings, copy your pairing code if it was not prepared
+        automatically.
+      </li>
       <li>Paste it below, save, and reload your video tab once.</li>
     </ol>
     <label for="code">Pairing code</label
@@ -55,12 +66,13 @@
     <p id="status"></p>
     <p>
       <small
-        >The extension inspects video play/pause/progress, including embedded
-        frames. It sends only the top-level website domain, playback state and
-        timing through a local native bridge. It does not send data to an
-        internet service, record titles/page text, or enable private-window
-        tracking. Muted video still counts. Permission on all websites is needed
-        for embedded players hosted on another domain.</small
+        >The helper reads media progress, sound state and geometry, including
+        embedded frames. It exchanges these signals and the top-level domain
+        with Daybook over encrypted local messages. Visible video counts as
+        watching; audible background YouTube and common music sites count as
+        Music. No activity uploads, page text, titles, screenshots or audio
+        recording. Website access is needed for embedded players; private-window
+        access is off.</small
       >
     </p>
     <script src="options.js"></script>

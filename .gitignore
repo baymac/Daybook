@@ -16,3 +16,8 @@ __pycache__/
 *.mobileprovision
 .swiftpm/
 .serena/
+
+# Generated pairing data stays on the installing Mac.
+local-pairing.json
+
+.gstack/

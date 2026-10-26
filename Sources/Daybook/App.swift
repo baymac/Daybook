@@ -71,8 +71,20 @@ func formatDuration(_ seconds: TimeInterval) -> String {
   @Published var todayTotal: TimeInterval = 0
   @Published var excludedApps = ""
   @Published var idleMinutes = 3
-  @Published var videoSessions: [VideoSession] = []
+  @Published var appearance: AppAppearance = .system {
+    didSet {
+      defaults.set(appearance.rawValue, forKey: "appearance")
+      NSApp.appearance = appearance.nativeAppearance
+    }
+  }
+  @Published var mediaSessions: [MediaSession] = []
+  @Published var systemAudioEnabled = false
+  @Published var systemAudioStatus = "All-app audio is off"
+  @Published var nativeEnabled = false
+  @Published var nativeAccessStatus = ""
+  @Published var nativeStatus = "Native player tracking is off"
   @Published var videoEnabled = true
+  @Published var showingHelperSetup = false
   @Published var videoStatus = "Waiting for video extension setup"
   private var store: ActivityStore?
   private let tracker = ActivityTracker()
@@ -85,22 +97,41 @@ func formatDuration(_ seconds: TimeInterval) -> String {
   private var nameCache: [String: String] = [:]
   private var videoObserver: NSObjectProtocol?
   private var playbackLedger = PlaybackLedger()
-  private var pairingCode = ""
+  private var replayWindow = PlaybackReplayWindow()
+  private(set) var pairingCode = ""
+  private let visibility = WindowVisibility()
+  private let nativePlayback = NativePlayback()
+  private let systemAudio = SystemAudioFactory.make()
+  private var audioPresence = AudioPresence()
+  private var visibleNativeBundles = Set<String>()
+  private var nativeProgress = NativeProgress()
+  private var mediaTimer: Timer?
+  private var browserPackets: [String: PlaybackPacket] = [:]
+  private var nativeSources = Set<String>()
 
   var activityTime: TimeInterval { rows.reduce(0) { $0 + $1.duration } }
   var foregroundTotal: TimeInterval { sessions.reduce(0) { $0 + $1.duration } }
   var videoTotal: TimeInterval {
-    PlaybackMath.duration(videoSessions.map { DateInterval(start: $0.start, end: $0.end) })
+    PlaybackMath.duration(
+      mediaSessions.filter { $0.kind == .video }.map { DateInterval(start: $0.start, end: $0.end) })
+  }
+  var musicTotal: TimeInterval {
+    PlaybackMath.duration(
+      mediaSessions.filter { $0.kind == .music }.map { DateInterval(start: $0.start, end: $0.end) })
+  }
+  var audioTotal: TimeInterval {
+    PlaybackMath.duration(
+      mediaSessions.filter { $0.kind == .audio }.map { DateInterval(start: $0.start, end: $0.end) })
   }
   var total: TimeInterval {
     PlaybackMath.duration(timelineSessions.map { DateInterval(start: $0.start, end: $0.end) })
   }
   var timelineSessions: [ActivitySession] {
     (sessions
-      + videoSessions.map {
+      + mediaSessions.map {
         ActivitySession(
-          id: -$0.id, bundleID: "daybook.video", appName: "Video playback", domain: $0.domain,
-          start: $0.start, end: $0.end)
+          id: -$0.id, bundleID: $0.bundleID, appName: $0.appName, domain: $0.domain,
+          start: $0.start, end: $0.end, mediaKind: $0.kind)
       }).sorted { $0.start < $1.start }
   }
   var switchCount: Int { ActivityAnalytics.switchCount(sessions) }
@@ -115,6 +146,9 @@ func formatDuration(_ seconds: TimeInterval) -> String {
   }
 
   init() {
+    appearance =
+      AppAppearance(rawValue: defaults.string(forKey: "appearance") ?? "system") ?? .system
+    NSApp.appearance = appearance.nativeAppearance
     do {
       let support = try FileManager.default.url(
         for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -126,12 +160,25 @@ func formatDuration(_ seconds: TimeInterval) -> String {
     trackingEnabled = defaults.bool(forKey: "trackingEnabled") && store != nil
     browserEnabled = defaults.bool(forKey: "browserEnabled")
     videoEnabled = defaults.object(forKey: "videoEnabled") as? Bool ?? true
+    systemAudioEnabled = defaults.bool(forKey: "systemAudioEnabled")
+    systemAudio.onSamples = { [weak self] in self?.receiveAudio($0) }
+    systemAudio.onStatus = { [weak self] in self?.systemAudioStatus = $0 }
+    systemAudio.enabled = systemAudioEnabled
+    systemAudioStatus =
+      systemAudioEnabled ? "Waiting for native audio playback" : "All-app audio is off"
+    nativeEnabled = defaults.bool(forKey: "nativeMediaEnabled")
+    nativePlayback.enabled = nativeEnabled
+    nativeStatus =
+      nativeEnabled ? "Waiting for native player playback" : "Native player tracking is off"
+    nativePlayback.onSamples = { [weak self] in self?.receiveNative($0) }
+    nativePlayback.onStatus = { [weak self] in self?.nativeAccessStatus = $0 }
     pairingCode = defaults.string(forKey: "videoPairingCode") ?? PlaybackProtocol.newPairingCode()
     defaults.set(pairingCode, forKey: "videoPairingCode")
     excludedApps = defaults.string(forKey: "excludedApps") ?? ""
     let savedIdle = defaults.integer(forKey: "idleMinutes")
     idleMinutes = [1, 2, 3, 5, 10].contains(savedIdle) ? savedIdle : 3
     tracker.exclusions = exclusionIDs
+    systemAudio.exclusions = exclusionIDs
     tracker.idleLimit = Double(idleMinutes * 60)
     launchAtLogin = SMAppService.mainApp.status == .enabled
     tracker.enabled = trackingEnabled
@@ -140,7 +187,7 @@ func formatDuration(_ seconds: TimeInterval) -> String {
     tracker.onInterval = { [weak self] in
       self?.record(bundle: $0, name: $1, domain: $2, start: $3, end: $4)
     }
-    tracker.onRecordingBreak = { [weak self] in self?.playbackLedger.clear() }
+    tracker.onRecordingBreak = { [weak self] in self?.clearPlayback() }
     videoObserver = DistributedNotificationCenter.default().addObserver(
       forName: PlaybackProtocol.notification, object: nil, queue: .main
     ) { [weak self] notification in
@@ -154,6 +201,10 @@ func formatDuration(_ seconds: TimeInterval) -> String {
         self.errorMessage = "Could not adjust idle time: \(error.localizedDescription)"
       }
     }
+    mediaTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.checkMedia() }
+    }
+    RunLoop.main.add(mediaTimer!, forMode: .common)
     refresh()
     refreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated {
@@ -203,10 +254,10 @@ func formatDuration(_ seconds: TimeInterval) -> String {
     do {
       let (start, end) = bounds
       let raw = try store.sessions(from: start, to: end)
-      videoSessions = try store.videoSessions(from: start, to: end)
+      mediaSessions = try store.mediaSessions(from: start, to: end)
       categoryCache = Dictionary(
         uniqueKeysWithValues: Set(
-          raw.map { $0.domain ?? $0.bundleID } + videoSessions.map(\.domain)
+          raw.map(\.usageKey) + mediaSessions.map(\.key)
         ).map { ($0, store.category(for: $0)) })
       sessions = raw.map { s in
         ActivitySession(
@@ -228,14 +279,18 @@ func formatDuration(_ seconds: TimeInterval) -> String {
         grouped[usageKey(session.domain ?? session.bundleID), default: []].append(
           DateInterval(start: session.start, end: session.end))
       }
-      for video in videoSessions {
-        grouped[video.domain, default: []].append(DateInterval(start: video.start, end: video.end))
+      for media in mediaSessions {
+        grouped[media.key, default: []].append(DateInterval(start: media.start, end: media.end))
       }
       var metadata = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
-      for video in videoSessions where metadata[video.domain] == nil {
-        metadata[video.domain] = UsageItem(
-          id: video.domain, name: video.domain, bundleID: "daybook.video", domain: video.domain,
-          duration: 0, visits: 0, category: store.category(for: video.domain))
+      for media in mediaSessions where metadata[media.key] == nil {
+        let name = media.domain ?? appName(media.bundleID, fallback: media.appName)
+        metadata[media.key] = UsageItem(
+          id: media.key,
+          name: name
+            + (media.kind == .music ? " · listening" : media.kind == .audio ? " · audio" : ""),
+          bundleID: media.bundleID,
+          domain: media.domain, duration: 0, visits: 0, category: store.category(for: media.key))
       }
       rows = grouped.compactMap { key, intervals in
         guard let item = metadata[key] else { return nil }
@@ -250,7 +305,7 @@ func formatDuration(_ seconds: TimeInterval) -> String {
       let todayForeground = try store.sessions(from: today, to: now).map {
         DateInterval(start: $0.start, end: $0.end)
       }
-      let todayVideo = try store.videoSessions(from: today, to: now).map {
+      let todayVideo = try store.mediaSessions(from: today, to: now).map {
         DateInterval(start: $0.start, end: $0.end)
       }
       todayTotal = PlaybackMath.duration(todayForeground + todayVideo)
@@ -264,7 +319,7 @@ func formatDuration(_ seconds: TimeInterval) -> String {
     }
     tracker.tick()
     flush()
-    playbackLedger.clear()
+    clearPlayback()
     trackingEnabled.toggle()
     paused = false
     tracker.paused = false
@@ -293,7 +348,7 @@ func formatDuration(_ seconds: TimeInterval) -> String {
   }
 
   func categoryForSession(_ session: ActivitySession) -> Category {
-    categoryCache[session.domain ?? session.bundleID] ?? .other
+    categoryCache[session.usageKey] ?? .other
   }
 
   func setIdleMinutes(_ minutes: Int) {
@@ -309,8 +364,10 @@ func formatDuration(_ seconds: TimeInterval) -> String {
   func saveExcludedApps(_ raw: String) {
     tracker.tick()
     flush()
+    clearPlayback()
     excludedApps = raw
     tracker.exclusions = exclusionIDs
+    systemAudio.exclusions = exclusionIDs
     defaults.set(raw, forKey: "excludedApps")
     status = "Exclusions saved · applies to new activity"
   }
@@ -318,51 +375,196 @@ func formatDuration(_ seconds: TimeInterval) -> String {
   func togglePause() {
     tracker.tick()
     flush()
-    playbackLedger.clear()
+    clearPlayback()
     paused.toggle()
     tracker.paused = paused
     status = paused ? "Tracking paused" : "Recording front app · on this Mac"
     refresh()
   }
 
+  private func clearPlayback() {
+    playbackLedger.clear()
+    browserPackets.removeAll()
+    nativeProgress.clear()
+    audioPresence.clear()
+    systemAudio.stop()
+    visibleNativeBundles.removeAll()
+    nativeSources.removeAll()
+    visibility.resetNativeWindows()
+  }
+
+  private func browserKind(_ packet: PlaybackPacket) -> MediaKind? {
+    guard let context = packet.context else { return nil }
+    return MusicSites.kind(
+      domain: packet.domain, playing: packet.playing,
+      visible: visibility.visibleBrowserVideo(context),
+      audible: context.audible && !WindowVisibility.outputIsMuted())
+  }
+
+  private func checkMedia() {
+    guard tracker.canRecordVideo else {
+      clearPlayback()
+      return
+    }
+    let now = Date()
+    for (session, packet) in browserPackets {
+      if now.timeIntervalSince1970 - packet.sentAt > 6 {
+        playbackLedger.discard(session)
+        browserPackets.removeValue(forKey: session)
+      } else {
+        playbackLedger.discardUnless(session, kind: browserKind(packet))
+      }
+    }
+    if nativeEnabled { nativePlayback.poll() }
+    if systemAudioEnabled { systemAudio.poll() }
+  }
+
   private func receivePlayback(_ object: String) {
     let now = Date()
     guard videoEnabled, let packet = PlaybackProtocol.decode(object, code: pairingCode, now: now)
     else { return }
+    guard let messageID = packet.messageID, replayWindow.accept(messageID, now: now) else { return }
+    guard packet.version == 2 else {
+      videoStatus = "Reload the updated browser extension to enable visibility tracking"
+      return
+    }
     guard tracker.canRecordVideo else {
-      playbackLedger.clear()
+      clearPlayback()
       videoStatus = "Browser connected · recording is paused or off"
       return
     }
     if exclusionIDs.contains(where: { packet.domain == $0 || packet.domain.hasSuffix("." + $0) }) {
       playbackLedger.discard(packet.session)
+      browserPackets.removeValue(forKey: packet.session)
       return
     }
+    let kind = browserKind(packet)
+    if packet.playing {
+      browserPackets[packet.session] = packet
+    } else {
+      browserPackets.removeValue(forKey: packet.session)
+    }
     videoStatus =
-      packet.playing ? "Video detected · \(packet.domain)" : "Video paused · \(packet.domain)"
-    guard let interval = playbackLedger.consume(packet, now: now) else { return }
-    do {
-      try store?.appendVideo(domain: interval.domain, start: interval.start, end: interval.end)
-    } catch { errorMessage = "Could not save video time: \(error.localizedDescription)" }
+      kind == .video
+      ? "Watching · \(packet.domain)"
+      : kind == .music
+        ? "Listening · \(packet.domain)" : "Connected · no visible video or supported music"
+    if let interval = playbackLedger.consume(packet, now: now, kind: kind) { saveMedia(interval) }
+  }
+
+  private func saveMedia(_ interval: MediaSession) {
+    do { try store?.appendMedia(interval) } catch {
+      errorMessage = "Could not save media time: \(error.localizedDescription)"
+    }
+  }
+
+  private func receiveNative(_ samples: [NativeMediaSample]) {
+    guard nativeEnabled, tracker.canRecordVideo else { return }
+    visibility.refresh()
+    let now = Date()
+    let sources = Set(samples.map(\.source))
+    for missing in nativeSources.subtracting(sources) { playbackLedger.discard(missing) }
+    nativeSources = sources
+    visibleNativeBundles.removeAll()
+    var statuses: [String] = []
+    for sample in samples {
+      if exclusionIDs.contains(sample.bundleID.lowercased())
+        || exclusionIDs.contains(sample.appName.lowercased())
+      {
+        playbackLedger.discard(sample.source)
+        continue
+      }
+      let playing = nativeProgress.playing(sample, now: now)
+      var bounds = sample.bounds
+      if sample.video && bounds == nil {
+        // VLC exposes no window scripting API. Keep one window identity through minimization.
+        bounds = visibility.nativeVideoBounds(pid: sample.pid, source: sample.source)
+      }
+      let visible = sample.video && visibility.visibleNativeVideo(pid: sample.pid, bounds: bounds)
+      if playing && visible { visibleNativeBundles.insert(sample.bundleID.lowercased()) }
+      let kind: MediaKind? =
+        playing
+        ? (visible ? .video : sample.audio && !WindowVisibility.outputIsMuted() ? .music : nil)
+        : nil
+      if let interval = playbackLedger.consume(
+        session: sample.source, bundleID: sample.bundleID, appName: sample.appName, domain: nil,
+        kind: kind, playing: playing, date: now, now: now)
+      {
+        saveMedia(interval)
+      }
+      let state =
+        !sample.playing
+        ? "paused"
+        : !playing
+          ? "checking progress"
+          : kind == .video
+            ? "watching"
+            : kind == .music
+              ? "listening" : sample.video ? "video hidden" : "media type unrecognized"
+      statuses.append("\(sample.appName) · \(state)")
+    }
+    nativeStatus =
+      statuses.isEmpty
+      ? "No supported native player is playing" : statuses.joined(separator: "  ·  ")
+  }
+
+  private func receiveAudio(_ samples: [AudioPlaybackSample]) {
+    guard systemAudioEnabled, tracker.canRecordVideo else { return }
+    let now = Date()
+    let muted = WindowVisibility.outputIsMuted()
+    for sample in samples {
+      let eligible =
+        sample.audible && !muted && !visibleNativeBundles.contains(sample.bundleID.lowercased())
+        && !exclusionIDs.contains(sample.bundleID.lowercased())
+        && !exclusionIDs.contains(sample.appName.lowercased())
+      guard let interval = audioPresence.consume(source: sample.source, audible: eligible, now: now)
+      else { continue }
+      let kind: MediaKind = MusicSites.isMusicApp(sample.bundleID) ? .music : .audio
+      saveMedia(
+        MediaSession(
+          id: 0, domain: nil, start: interval.start, end: interval.end, kind: kind,
+          bundleID: sample.bundleID, appName: sample.appName))
+    }
+  }
+
+  func setSystemAudioEnabled(_ enabled: Bool) {
+    clearPlayback()
+    systemAudioEnabled = enabled
+    systemAudio.enabled = enabled
+    defaults.set(enabled, forKey: "systemAudioEnabled")
+    systemAudioStatus =
+      enabled
+      ? "Allow System Audio Recording when macOS asks. Only sound activity is kept."
+      : "All-app audio is off"
+  }
+
+  func setNativeEnabled(_ enabled: Bool) {
+    nativeEnabled = enabled
+    nativePlayback.enabled = enabled
+    defaults.set(enabled, forKey: "nativeMediaEnabled")
+    clearPlayback()
+    nativeStatus =
+      enabled
+      ? "Open a supported player and allow Automation when macOS asks"
+      : "Native player tracking is off"
   }
 
   func setVideoEnabled(_ enabled: Bool) {
     videoEnabled = enabled
     defaults.set(enabled, forKey: "videoEnabled")
-    playbackLedger.clear()
+    clearPlayback()
     videoStatus =
-      enabled ? "Waiting for a playing video from the paired browser" : "Video tracking is off"
+      enabled ? "Waiting for playback from the paired browser" : "Browser media tracking is off"
   }
 
   func copyVideoPairingCode() {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(pairingCode, forType: .string)
-    videoStatus = "Pairing code copied · paste it in Daybook Video extension options"
+    videoStatus = "Pairing code copied · paste it in Daybook Helper options"
   }
 
   func showVideoSetup() {
-    guard let resource = Bundle.main.resourceURL else { return }
-    NSWorkspace.shared.open(resource.appendingPathComponent("VideoExtension/Setup.html"))
+    showingHelperSetup = true
   }
 
   func revealVideoExtension() {

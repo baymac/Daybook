@@ -95,7 +95,7 @@ struct StoreTests {
       ("com.tinyspeck.slackmacgap", .communication), ("com.apple.mail", .communication),
       ("com.apple.MobileSMS", .communication),
       ("com.microsoft.teams2", .communication), ("us.zoom.xos", .communication),
-      ("com.spotify.client", .entertainment), ("com.apple.finder", .utilities),
+      ("com.spotify.client", .music), ("com.apple.finder", .utilities),
       ("com.1password.1password", .utilities), ("org.ankiweb.dtop", .learning),
       ("WWW.Reddit.COM.", .social), ("old.reddit.com", .social),
       ("https://www.youtube.com/watch?v=test", .entertainment),

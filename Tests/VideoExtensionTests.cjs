@@ -5,6 +5,10 @@ const {
   observe,
   host,
   anyPlaying,
+  rect,
+  clip,
+  regions,
+  screenRegions,
 } = require("../Extension/playback-core.js");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -19,7 +23,7 @@ const moving = {
   videoHeight: 720,
   currentTime: 10,
 };
-test("Only progressing video counts, including muted/background video", () => {
+test("Playback progress detection is independent of visibility and sound", () => {
   assert.equal(advancing(moving, 9), true);
   assert.equal(advancing({ ...moving, muted: true }, 9), true);
   assert.equal(advancing(moving, 10), false);
@@ -66,11 +70,25 @@ test("Only the top-level hostname is forwarded, with no path/title/query", () =>
 
 function workerHarness(enabled = true) {
   let receive, removed, disconnect;
+  const tab = {
+    id: 7,
+    windowId: 3,
+    active: true,
+    audible: true,
+    mutedInfo: { muted: false },
+  };
+  const window = { left: 0, top: 0, width: 1200, height: 900, state: "normal" };
   let connections = 0;
   const messages = [];
   const settings = { pairingCode: "a1".repeat(32), enabled };
   const port = {
-    onMessage: { addListener() {} },
+    onMessage: {
+      addListener(f) {
+        queueMicrotask(() =>
+          f({ kind: "ready", browserPID: 123, appRunning: true }),
+        );
+      },
+    },
     onDisconnect: {
       addListener(f) {
         disconnect = f;
@@ -85,9 +103,16 @@ function workerHarness(enabled = true) {
     TextEncoder,
     Date,
     console,
-    crypto: { randomUUID: () => "test-epoch", subtle: crypto.webcrypto.subtle },
+    setTimeout,
+    clearTimeout,
+    queueMicrotask,
+    crypto: {
+      randomUUID: () => "test-epoch",
+      getRandomValues: (a) => crypto.webcrypto.getRandomValues(a),
+      subtle: crypto.webcrypto.subtle,
+    },
     btoa: (s) => Buffer.from(s, "binary").toString("base64"),
-    DaybookPlayback: { host, anyPlaying },
+    DaybookPlayback: { host, anyPlaying, rect, clip, regions, screenRegions },
     importScripts() {},
     chrome: {
       runtime: {
@@ -113,7 +138,17 @@ function workerHarness(enabled = true) {
           },
         },
       },
+      windows: {
+        async get() {
+          return window;
+        },
+        onBoundsChanged: { addListener() {} },
+      },
       tabs: {
+        async get() {
+          return tab;
+        },
+        onActivated: { addListener() {} },
         onRemoved: {
           addListener(f) {
             removed = f;
@@ -136,6 +171,8 @@ function workerHarness(enabled = true) {
   return {
     messages,
     settings,
+    tab,
+    window,
     sender,
     receive,
     removed,
@@ -149,36 +186,64 @@ async function settleUntil(check) {
   assert.ok(check(), "asynchronous native packet was not sent");
 }
 function decodePacket(message, pairingCode) {
-  const payload = Buffer.from(message.payload, "base64");
-  const mac = crypto
-    .createHmac("sha256", Buffer.from(pairingCode, "hex"))
-    .update(payload)
-    .digest("hex");
-  assert.equal(message.mac, mac);
-  return JSON.parse(payload);
-}
-test("Browser worker authenticates playback, rejects outsiders, and never forwards page URLs", async () => {
-  const h = workerHarness();
-  h.receive({ type: "daybook-video", playing: false }, h.sender);
-  h.receive(
-    { type: "daybook-video", playing: true },
-    { ...h.sender, id: "other-extension" },
+  assert.deepEqual(Object.keys(message).sort(), [
+    "ciphertext",
+    "nonce",
+    "version",
+  ]);
+  assert.equal(message.version, 2);
+  const sealed = Buffer.from(message.ciphertext, "base64");
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    Buffer.from(pairingCode, "hex"),
+    Buffer.from(message.nonce, "base64"),
   );
+  decipher.setAAD(Buffer.from("local.daybook.playback.v2"));
+  decipher.setAuthTag(sealed.subarray(-16));
+  return JSON.parse(
+    Buffer.concat([decipher.update(sealed.subarray(0, -16)), decipher.final()]),
+  );
+}
+function media(playing = true, token = "top", overrides = {}) {
+  return {
+    type: "daybook-media",
+    token,
+    playing,
+    audio: true,
+    regions: playing ? [{ x: 100, y: 100, width: 600, height: 400 }] : [],
+    links: [],
+    width: 1200,
+    height: 800,
+    pictureInPicture: false,
+    pipWidth: 0,
+    pipHeight: 0,
+    ...overrides,
+  };
+}
+test("Worker authenticates geometry and domain without forwarding private page URLs", async () => {
+  const h = workerHarness();
+  h.receive(media(true), { ...h.sender, id: "outsider" });
   assert.equal(h.messages.length, 0);
-  h.receive({ type: "daybook-video", playing: true }, h.sender);
+  h.receive(media(true), h.sender);
   await settleUntil(() => h.messages.length === 1);
   const packet = decodePacket(h.messages[0], h.settings.pairingCode);
   assert.deepEqual(Object.keys(packet).sort(), [
+    "context",
     "domain",
     "playing",
     "sentAt",
     "session",
     "version",
   ]);
+  assert.equal(packet.version, 2);
   assert.equal(packet.domain, "youtube.com");
-  assert.equal(packet.playing, true);
-  assert.equal(packet.session, "test-epoch:7");
+  assert.equal(packet.context.browserPID, 123);
+  assert.equal(packet.context.audible, true);
+  assert.deepEqual(packet.context.regions, [
+    { x: 100, y: 200, width: 600, height: 400 },
+  ]);
   assert.ok(!JSON.stringify(packet).includes("secret"));
+  assert.ok(!JSON.stringify(h.messages[0]).includes("youtube.com"));
   h.removed(7);
   await settleUntil(() => h.messages.length === 2);
   assert.equal(
@@ -186,43 +251,115 @@ test("Browser worker authenticates playback, rejects outsiders, and never forwar
     false,
   );
 });
-test("Pausing one frame does not stop another playing frame; disabled pairing sends nothing", async () => {
+test("Background tabs and minimized windows have no visible regions; focus is irrelevant", async () => {
+  for (const change of [
+    { tab: { active: false } },
+    { window: { state: "minimized" } },
+  ]) {
+    const h = workerHarness();
+    Object.assign(h.tab, change.tab);
+    Object.assign(h.window, change.window);
+    h.receive(media(), h.sender);
+    await settleUntil(() => h.messages.length === 1);
+    const p = decodePacket(h.messages[0], h.settings.pairingCode);
+    assert.deepEqual(p.context.regions, []);
+    assert.equal(p.context.audible, true);
+  }
   const h = workerHarness();
-  h.receive({ type: "daybook-video", playing: true }, h.sender);
+  h.window.focused = false;
+  h.tab.mutedInfo.muted = true;
+  h.receive(media(), h.sender);
   await settleUntil(() => h.messages.length === 1);
-  h.receive(
-    { type: "daybook-video", playing: true },
-    { ...h.sender, frameId: 1 },
+  const p = decodePacket(h.messages[0], h.settings.pairingCode);
+  assert.equal(p.context.regions.length, 1);
+  assert.equal(p.context.audible, false);
+});
+test("Embedded frames project and clip through parents, including zoom", () => {
+  const now = 1000;
+  const top = {
+    ...media(false),
+    at: now,
+    frameId: 0,
+    links: [
+      {
+        child: "child",
+        rect: { x: 100, y: -100, width: 600, height: 400 },
+        clip: { x: 100, y: 0, width: 600, height: 300 },
+      },
+    ],
+  };
+  const child = {
+    ...media(true, "child", {
+      width: 600,
+      height: 400,
+      regions: [{ x: 0, y: 0, width: 600, height: 400 }],
+    }),
+    at: now,
+    frameId: 1,
+  };
+  const frames = new Map([
+    [0, top],
+    [1, child],
+  ]);
+  assert.deepEqual(regions(frames, now), [
+    { x: 100, y: 0, width: 600, height: 300 },
+  ]);
+  assert.deepEqual(regions(frames, now + 7000), []);
+  top.links = [];
+  assert.deepEqual(regions(frames, now), []);
+  assert.deepEqual(
+    screenRegions(
+      [{ x: 10, y: 20, width: 300, height: 200 }],
+      { width: 600, height: 400 },
+      { left: -1200, top: 0, width: 1200, height: 900 },
+    ),
+    [{ x: -1180, y: 140, width: 600, height: 400 }],
   );
-  h.receive({ type: "daybook-video", playing: false }, h.sender);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(h.messages.length, 1);
-  h.receive(
-    { type: "daybook-video", playing: false },
-    { ...h.sender, frameId: 1 },
-  );
-  await settleUntil(() => h.messages.length === 2);
+});
+test("Frame aggregation, pause and reconnect preserve authenticated session identity", async () => {
+  const h = workerHarness();
+  h.receive(media(), h.sender);
+  await settleUntil(() => h.messages.length === 1);
+  h.receive(media(true, "child"), { ...h.sender, frameId: 1 });
+  h.receive(media(false), h.sender);
+  await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(
-    decodePacket(h.messages[1], h.settings.pairingCode).playing,
-    false,
+    decodePacket(h.messages.at(-1), h.settings.pairingCode).playing,
+    true,
+  );
+  h.receive(media(false, "child"), { ...h.sender, frameId: 1 });
+  await settleUntil(
+    () =>
+      decodePacket(h.messages.at(-1), h.settings.pairingCode).playing === false,
+  );
+  h.disconnect();
+  h.receive(media(), h.sender);
+  await settleUntil(
+    () =>
+      h.connections() === 2 &&
+      decodePacket(h.messages.at(-1), h.settings.pairingCode).playing,
   );
   const disabled = workerHarness(false);
-  disabled.receive({ type: "daybook-video", playing: true }, disabled.sender);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  disabled.receive(media(), disabled.sender);
+  await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(disabled.messages.length, 0);
 });
-
-test("Browser reconnects after a native helper disconnect without re-pairing", async () => {
-  const h = workerHarness();
-  h.receive({ type: "daybook-video", playing: true }, h.sender);
-  await settleUntil(() => h.messages.length === 1);
-  assert.equal(h.connections(), 1);
-  h.disconnect();
-  h.receive({ type: "daybook-video", playing: false }, h.sender);
-  await settleUntil(() => h.messages.length === 2);
-  assert.equal(h.connections(), 2);
+test("Audio elements can prove progress and stalled audio stops", () => {
+  const audio = { ...moving, tagName: "AUDIO", videoWidth: 0, videoHeight: 0 };
+  assert.equal(advancing(audio, 9), true);
+  assert.equal(observe(audio, { time: 9, lastAdvance: 0 }, 1000).playing, true);
   assert.equal(
-    decodePacket(h.messages[1], h.settings.pairingCode).playing,
+    observe(audio, { time: 10, lastAdvance: 1000 }, 3000).playing,
     false,
   );
+});
+test("Malformed geometry and old content messages are rejected", async () => {
+  const h = workerHarness();
+  h.receive({ type: "daybook-video", playing: true }, h.sender);
+  h.receive(
+    media(true, "top", { regions: [{ x: NaN, y: 0, width: 1, height: 2 }] }),
+    h.sender,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(h.messages.length, 0);
 });

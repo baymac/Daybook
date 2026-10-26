@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <title>Daybook video setup</title>
     <style>
+      :root { color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #1b1d1c !important; color: #e8ebe0 !important; }
+        code { background: #29332d !important; }
+        small { color: #a6b0a6 !important; }
+      }
       body {
         font: 17px system-ui;
         line-height: 1.7;
@@ -31,66 +37,66 @@
   </head>
   <body>
     <h1>Count video while you work</h1>
-    <p>
-      Brave, Chrome and Edge can report real video progress to Daybook. This
-      works in background tabs and embedded frames. A playing video is counted
-      even without keyboard or mouse input.
-    </p>
+    <p>Track visible video and background music locally in Daybook.</p>
     <ol>
       <li>
-        In Daybook Settings, click <b>Show extension folder</b>. Keep that
-        folder in its current location.
+        Move Daybook to Applications. Open Settings →
+        <b>Install Daybook Helper</b>.
       </li>
       <li>
-        For Brave, double-click <code>install-bridge.command</code> in that
-        folder. This installs a local native-messaging manifest. It does not
-        modify browser security settings. For Chrome or Edge, run
-        <code>python3 install_bridge.py --browser chrome</code> or
-        <code>--browser edge</code> from the folder.
+        Download from GitHub or use the included helper. Daybook verifies and
+        pairs it on your Mac.
       </li>
       <li>
-        Open <code>brave://extensions</code> (or
-        <code>chrome://extensions</code> / <code>edge://extensions</code>). Turn
-        on <b>Developer mode</b>, choose <b>Load unpacked</b>, and select the
-        VideoExtension folder containing manifest.json. Review the browser's
-        website-access permissions.
+        Select Brave, Chrome or Edge and click <b>Connect browser</b>. Choose
+        Library/Application Support when asked.
       </li>
       <li>
-        In Daybook Settings, click <b>Copy pairing code</b>. Open the Daybook
-        Video extension's options (click its toolbar icon), paste the code, and
-        save with sending enabled.
+        Click <b>Open Extensions</b>, enable <b>Developer mode</b>, then
+        <b>Load unpacked</b>. Select the Daybook-Helper folder shown by the app
+        and approve website access.
       </li>
       <li>
-        Reload the stream tab once. Keep Daybook running with tracking on and
-        Count video playback enabled. Its Settings status will show the detected
-        domain.
+        Reload media tabs. Existing installations can use Reload in the
+        browser’s Extensions page.
       </li>
     </ol>
     <p>
-      <b>What the permission means:</b> detecting embedded players needs
-      extension access to all websites, because players may be hosted on a
-      different domain. The implementation only inspects video playback
-      properties, and sends the top-level domain, play/pause status and timing
-      to a local helper. It does not send data to an internet service or
-      save/send titles, text, screenshots, full page URLs or audio samples.
-      Private-window access is not enabled.
+      <b>Counting:</b> visible video counts on either display, even without
+      focus. Covered, minimized, offscreen and inactive-tab video does not count
+      as watching. Picture in Picture counts when its window is visible. Audible
+      background YouTube and common music sites count as Music; other hidden
+      video does not. Work, watching and listening can overlap; computer usage
+      counts the union once.
     </p>
     <p>
-      <b>How time is counted:</b> a two-hour video plus two hours of work
-      happening at the same time counts as two hours of computer usage. Video
-      playback and foreground time are also shown separately. Per-app/site and
-      category activity totals may overlap. Pauses, lost signals, sleeping and
-      stopped tracking do not create an unlimited playback session.
+      <b>Privacy:</b> the helper reads media progress, sound state and geometry.
+      It passes the top-level domain, playback timing and temporary visibility
+      signals through an encrypted, authenticated local native bridge. Geometry
+      and process identifiers are not saved in activity history. No page text,
+      titles, full URLs, screenshots or audio samples are saved or uploaded.
+      Website access is needed for cross-origin embedded players. Private-window
+      access is off.
+    </p>
+    <p>
+      <b>Limits:</b> detection starts after setup and tab reload; missing
+      history cannot be reconstructed. Browser throttling, DRM, unusual players,
+      or uncertain visibility can leave gaps. The app needs no screen recording
+      permission. Native Spotify, Apple Music, QuickTime and identifiable local
+      VLC media use a separate opt-in Automation setting. For VLC, keep the
+      video window largest when playback begins; other native video players and
+      unidentifiable VLC video streams need additional adapters. Optional
+      all-app audio on macOS 14.2+ measures sound levels in memory with System
+      Audio Recording permission; only app identity and timing are kept. Known
+      music apps are Music, other sources are Audio. Browsers continue using the
+      helper for domain accuracy.
     </p>
     <p>
       <small
-        >Detection begins after setup and a tab reload. Old missing playback
-        cannot be reconstructed. Browser throttling or unusual players can delay
-        signals; undetected gaps are not guessed. Only HTML video in regular
-        HTTP(S) pages is supported, not native player apps, browser-internal
-        pages or audio-only elements. Use a stable app location and re-run the
-        bridge installer if you move Daybook. Closing Daybook stops saving
-        activity.</small
+        >For a source checkout, build Daybook and use
+        <code>install_bridge.py --browser brave --app /path/to/Daybook.app</code
+        >, load this folder, and pair through the extension options. Reconnect
+        the bridge if Daybook moves.</small
       >
     </p>
   </body>

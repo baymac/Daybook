@@ -1,33 +1,35 @@
 # Daybook
 
-A private Mac dashboard for app and website time, productivity categories, app switches, and your daily timeline. Background video counts too.
+A private Mac dashboard for apps, websites, productivity, watching, music, app switches, and your daily timeline.
 
-![Daybook dashboard with fictional activity](docs/images/dashboard.jpg)
+![Daybook dashboard](docs/images/dashboard.jpg)
 
-[Apps & sites screenshot](docs/images/apps-and-sites.jpg)
+[Apps & sites](docs/images/apps-and-sites.jpg) · [Dark mode](docs/images/dark-mode.jpg)
 
-Your activity stays on your Mac. No telemetry, cloud account, or activity uploads. Screenshots use fictional data.
+Activity stays on your Mac. No telemetry, accounts, or activity uploads.
 
 ## Set up
 
-Requires Apple silicon, macOS 14+, and Xcode command line tools.
+Download the app from [Releases](https://github.com/baymac/Daybook/releases), then move it to Applications. Requires Apple silicon and macOS 14+. Builds are locally signed, not notarized.
+
+Or build with Xcode command line tools:
 
 ```sh
 ./build.sh
 open .build/Daybook.app
 ```
 
-Click **Start tracking**, then use **Settings**:
+Choose System, Light, or Dark appearance in **Settings**. Start tracking, then enable what you need:
 
-- **Website domains:** enable and approve browser Automation access.
-- **Video playback:** open **Setup guide** to install and pair the Brave/Chrome/Edge extension. It needs website access for embedded players; signals stay local.
-- **Open at login:** move the app to Applications first. Correct categories in **Apps & sites**.
+- **Website domains:** allow browser Automation.
+- **Install Daybook Helper:** download or use the included Brave/Chrome/Edge helper, connect, then load it in Extensions. Playback messages are encrypted locally.
+- **All-app audio:** optional System Audio Recording permission, macOS 14.2+. Only app/timing data is saved. Native video players have a separate Automation option.
 
-Video and work can overlap; computer usage counts that time once. Builds are locally signed, not notarized.
+Visible video counts across displays. Background YouTube and common music sites count as Music. Overlapping activities count once in computer usage. Correct categories in **Apps & sites**.
 
 ## Contribute
 
-Ask Codex to fix an issue on your Mac or add a feature, then send a pull request. Fixes, features, and pull requests are welcome. Run `./test.sh` before submitting (Swift, Node.js, Python 3).
+Ask Codex to fix an issue on your Mac or add a feature, then send a pull request. All pull requests are welcome. Run `./test.sh` before submitting (Swift, Node.js, Python 3).
 
 [MIT license](LICENSE).
 

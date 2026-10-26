@@ -23,15 +23,6 @@ enum Page: String, CaseIterable, Identifiable {
   }
 }
 
-private enum Paper {
-  static let background = Color(red: 0.965, green: 0.956, blue: 0.933)
-  static let sidebar = Color(red: 0.935, green: 0.925, blue: 0.900)
-  static let ink = Color(red: 0.17, green: 0.21, blue: 0.20)
-  static let secondary = Color(red: 0.43, green: 0.46, blue: 0.43)
-  static let orange = Color(red: 0.82, green: 0.36, blue: 0.18)
-  static let teal = Color(red: 0.22, green: 0.46, blue: 0.42)
-}
-
 private func durationText(_ seconds: TimeInterval) -> String {
   if seconds > 0 && seconds < 60 { return "<1m" }
   let minutes = max(0, Int(seconds) / 60)
@@ -84,8 +75,11 @@ struct ContentView: View {
       }
     }
     .background(Paper.background).foregroundStyle(Paper.ink)
-    .tint(Paper.teal).preferredColorScheme(.light)
+    .tint(Paper.controlAccent).preferredColorScheme(model.appearance.colorScheme)
     .frame(minWidth: 980, minHeight: 680)
+    .sheet(isPresented: $model.showingHelperSetup) {
+      HelperSetupView(pairingCode: model.pairingCode)
+    }
     .onAppear { excludedAppsDraft = model.excludedApps }
     .onChange(of: model.day) { _, _ in timelineSelection = nil }
   }
@@ -109,7 +103,7 @@ struct ContentView: View {
               if model.page == page { Circle().fill(Paper.orange).frame(width: 5, height: 5) }
             }.padding(.horizontal, 14).frame(height: 43)
               .background(
-                model.page == page ? Color.white.opacity(0.66) : Color.clear,
+                model.page == page ? Paper.surface : Color.clear,
                 in: RoundedRectangle(cornerRadius: 10)
               )
               .contentShape(Rectangle())
@@ -143,22 +137,7 @@ struct ContentView: View {
       Text(model.page.title).font(.system(size: 15, weight: .semibold))
       Spacer()
       if model.page != .settings {
-        HStack(spacing: 6) {
-          Button {
-            moveDay(-1)
-          } label: {
-            Image(systemName: "chevron.left").frame(width: 25, height: 30)
-          }.help("Previous day")
-          DatePicker("Date", selection: $model.day, in: ...Date(), displayedComponents: .date)
-            .labelsHidden().datePickerStyle(.field).fixedSize()
-          Button {
-            moveDay(1)
-          } label: {
-            Image(systemName: "chevron.right").frame(width: 25, height: 30)
-          }
-          .disabled(Calendar.current.isDateInToday(model.day)).help("Next day")
-          Button("Today") { model.day = Date() }.padding(.leading, 5)
-        }.buttonStyle(.plain).font(.system(size: 12))
+        DateNavigator(selection: $model.day, step: model.page == .week ? 7 : 1)
       }
       Button {
         model.refresh()
@@ -166,7 +145,7 @@ struct ContentView: View {
         Image(systemName: "arrow.clockwise").frame(width: 32, height: 32)
       }
       .buttonStyle(.plain).help("Refresh")
-    }.padding(.horizontal, 32).frame(height: 64)
+    }.padding(.horizontal, 32).frame(height: 76)
       .overlay(alignment: .bottom) { Rectangle().fill(Paper.ink.opacity(0.07)).frame(height: 1) }
   }
 
@@ -184,10 +163,10 @@ struct ContentView: View {
             .font(.callout).foregroundStyle(Paper.teal)
         }.buttonStyle(.plain)
       }
-      LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+      LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 16) {
         metric(
           "COMPUTER USAGE", value: durationText(model.total),
-          foot: "Foreground and video time; overlaps counted once", symbol: "clock",
+          foot: "Work, watching and listening; overlaps counted once", symbol: "clock",
           color: Paper.orange)
         metric(
           "APP SWITCHES", value: "\(model.switchCount)", foot: "Changes between foreground apps",
@@ -202,8 +181,22 @@ struct ContentView: View {
           "FOREGROUND TIME", value: durationText(model.foregroundTotal),
           foot: "The app you were working in", symbol: "macwindow", color: Paper.teal)
         metric(
-          "VIDEO PLAYBACK", value: durationText(model.videoTotal),
-          foot: "Includes detected background video", symbol: "play.rectangle", color: Paper.orange)
+          "WATCHING", value: durationText(model.videoTotal),
+          foot: "Video visible on any connected display", symbol: "play.rectangle",
+          color: Paper.orange)
+      }
+      HStack {
+        Image(systemName: "music.note").foregroundStyle(Paper.teal)
+        Text("Music listening").fontWeight(.medium)
+        Spacer()
+        Text(durationText(model.musicTotal)).font(.system(.title3, design: .monospaced))
+      }.padding(20).background(Paper.surface, in: RoundedRectangle(cornerRadius: 14))
+      if model.audioTotal > 0 {
+        HStack {
+          Label("Other audio playback", systemImage: "waveform").fontWeight(.medium)
+          Spacer()
+          Text(durationText(model.audioTotal)).font(.system(.title3, design: .monospaced))
+        }.padding(20).background(Paper.surface, in: RoundedRectangle(cornerRadius: 14))
       }
       dayTimeline
       activityChart(weekly: false)
@@ -211,7 +204,7 @@ struct ContentView: View {
       panel {
         sectionTitle(
           "Most used apps & sites",
-          detail: "Includes video playback · Simultaneous activities may overlap")
+          detail: "Includes watching and listening · Simultaneous activities may overlap")
         if model.rows.isEmpty {
           empty(
             "No activity recorded",
@@ -267,7 +260,7 @@ struct ContentView: View {
         TextField("Find an app or website", text: $search).textFieldStyle(.plain)
         Spacer()
         Button("Export CSV", action: model.exportCSV).buttonStyle(.bordered)
-      }.padding(12).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
+      }.padding(12).background(Paper.surface, in: RoundedRectangle(cornerRadius: 12))
       if model.rows.contains(where: { $0.category == .other }) {
         HStack(spacing: 14) {
           Image(systemName: "tag").foregroundStyle(Paper.orange)
@@ -322,12 +315,21 @@ struct ContentView: View {
     VStack(alignment: .leading, spacing: 26) {
       introduction(
         "Built around your boundaries.",
-        subtitle: "You decide what gets recorded. Everything stays on this Mac.")
+        subtitle: "You decide what gets recorded. Activity stays on this Mac.")
+      panel {
+        settingRow("Appearance", detail: "Choose a look, or follow your Mac’s appearance.") {
+          Picker("Appearance", selection: $model.appearance) {
+            ForEach(AppAppearance.allCases) { appearance in
+              Text(appearance.title).tag(appearance)
+            }
+          }.labelsHidden().pickerStyle(.segmented).frame(width: 235)
+        }
+      }
       panel {
         Label("Private by design", systemImage: "lock.shield").font(.title3.weight(.medium))
           .foregroundStyle(Paper.teal)
         Text(
-          "No usage reports leave this Mac. No advertising, cloud sync, or telemetry. Optional video signals arrive through a local browser bridge; exports are files you control."
+          "No usage reports leave this Mac. No advertising, cloud sync, or telemetry. Optional media signals use an encrypted local bridge. Optional all-app audio keeps app/timing data only; exports are files you control."
         )
         .font(.callout).foregroundStyle(Paper.secondary).lineSpacing(4)
       }
@@ -347,7 +349,7 @@ struct ContentView: View {
         settingRow(
           "Idle cutoff",
           detail:
-            "After this long without input, inactive foreground time is removed. Detected video playback continues to count separately."
+            "After this long without input, inactive foreground time is removed. Visible video and confirmed listening continue to count separately."
         ) {
           Picker(
             "Idle cutoff",
@@ -395,30 +397,64 @@ struct ContentView: View {
       }
       panel {
         sectionTitle(
-          "Video playback",
+          "Watching & listening",
           detail:
-            "A local browser extension detects real playback, including background tabs and embedded players"
+            "The local extension detects playback; window geometry decides whether video is visible"
         )
         settingRow(
-          "Count video playback",
+          "Track browser media",
           detail:
-            "Video continues to count while you work elsewhere or stop typing. Pauses, buffering, sleep and missing signals are not extended indefinitely."
+            "Visible video counts on either display, even without focus. Covered or minimized video stops counting as watching. Audible background YouTube and supported music sites count as listening."
         ) {
           Toggle(
-            "Count video playback",
+            "Track browser media",
             isOn: Binding(get: { model.videoEnabled }, set: model.setVideoEnabled)
           ).labelsHidden().toggleStyle(.switch)
         }
         Text(model.videoStatus).font(.caption).foregroundStyle(Paper.teal)
         HStack {
-          Button("Setup guide", action: model.showVideoSetup)
+          Button("Install Daybook Helper…", action: model.showVideoSetup)
           Button("Show extension folder", action: model.revealVideoExtension)
           Button("Copy pairing code", action: model.copyVideoPairingCode)
         }.buttonStyle(.bordered)
         Text(
-          "Computer usage counts overlapping work and video once. App/site and category totals include both activities and can add up to more than computer usage. Domain exclusions also apply to video."
+          "Computer usage counts overlapping work, watching and listening once. Activity and category totals may overlap. Exclusions apply to media too."
         )
         .font(.caption).foregroundStyle(Paper.secondary)
+      }
+      panel {
+        sectionTitle("All-app audio", detail: "Automatic native app coverage · macOS 14.2+")
+        settingRow(
+          "Detect audio across apps",
+          detail:
+            "Requires System Audio Recording permission. Measures sound levels in memory; never saves or uploads audio. Known music apps go to Music; unfamiliar sources go to Audio. Short alerts are ignored. Browsers use Daybook Helper for site accuracy."
+        ) {
+          Toggle(
+            "Detect audio across apps",
+            isOn: Binding(get: { model.systemAudioEnabled }, set: model.setSystemAudioEnabled)
+          ).labelsHidden().toggleStyle(.switch)
+        }
+        Text(model.systemAudioStatus).font(.caption).foregroundStyle(Paper.teal)
+      }
+      panel {
+        sectionTitle("Native players", detail: "Spotify, Apple Music, QuickTime and VLC")
+        settingRow(
+          "Track native playback",
+          detail:
+            "Allow Automation for each player. Music counts while listening in the background; video requires a visible player. VLC supports identifiable local video and audio files."
+        ) {
+          Toggle(
+            "Track native playback",
+            isOn: Binding(get: { model.nativeEnabled }, set: model.setNativeEnabled)
+          ).labelsHidden().toggleStyle(.switch)
+        }
+        Text(model.nativeStatus).font(.caption).foregroundStyle(Paper.teal)
+        if !model.nativeAccessStatus.isEmpty {
+          Text(model.nativeAccessStatus).font(.caption).foregroundStyle(Paper.orange)
+        }
+        Text(
+          "For VLC, start with its video window as the largest VLC window. Other native video players need an adapter. All-app audio can detect sound without a player-specific adapter."
+        ).font(.caption).foregroundStyle(Paper.secondary)
       }
       panel {
         sectionTitle(
@@ -427,7 +463,8 @@ struct ContentView: View {
         TextEditor(text: $excludedAppsDraft)
           .font(.system(size: 12, design: .monospaced))
           .frame(height: 76).padding(6)
-          .background(.white, in: RoundedRectangle(cornerRadius: 8))
+          .scrollContentBackground(.hidden)
+          .background(Paper.surface, in: RoundedRectangle(cornerRadius: 8))
           .overlay(RoundedRectangle(cornerRadius: 8).stroke(Paper.ink.opacity(0.1)))
         HStack {
           Text("One entry per line, for example Slack or example.com. Existing records are kept.")
@@ -483,13 +520,13 @@ struct ContentView: View {
         .minimumScaleFactor(0.65).lineLimit(1)
       Text(foot).font(.system(size: 11)).foregroundStyle(Paper.secondary)
     }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-      .background(.white.opacity(0.68), in: RoundedRectangle(cornerRadius: 16))
+      .background(Paper.surface, in: RoundedRectangle(cornerRadius: 16))
   }
 
   private func panel<Content: View>(@ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 18, content: content).padding(24)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 18))
+      .background(Paper.surface, in: RoundedRectangle(cornerRadius: 18))
   }
 
   private func sectionTitle(_ title: String, detail: String) -> some View {
@@ -596,7 +633,7 @@ struct ContentView: View {
     panel {
       sectionTitle(
         "Time by category",
-        detail: "Share of activity time · Parallel video can overlap foreground work")
+        detail: "Share of activity time · Watching and listening can overlap work")
       if model.rows.isEmpty {
         empty(
           "No categories to compare",
@@ -637,7 +674,7 @@ struct ContentView: View {
       sectionTitle(
         "Your day, in sequence",
         detail:
-          "Foreground sessions and detected video · Overlapping activities can appear together")
+          "Work, watching and listening · Overlapping activities can appear together")
       if sessions.isEmpty {
         empty(
           "No sessions for this date", "Start tracking to build a chronological view of your day.",
@@ -677,7 +714,10 @@ struct ContentView: View {
               HStack(spacing: 10) {
                 Circle().fill(categoryColor(sessionCategory(session))).frame(width: 7, height: 7)
                 Text(
-                  (session.bundleID == "daybook.video" ? "Video · " : "")
+                  (session.mediaKind == .video
+                    ? "Watching · "
+                    : session.mediaKind == .music
+                      ? "Listening · " : session.mediaKind == .audio ? "Audio · " : "")
                     + (session.domain ?? session.appName)
                 ).fontWeight(.medium)
                 Text(
@@ -715,15 +755,17 @@ struct ContentView: View {
   private func categoryColor(_ category: Category) -> Color {
     switch category {
     case .productivity: return Paper.teal
-    case .communication: return Color(red: 0.25, green: 0.48, blue: 0.65)
-    case .social: return Color(red: 0.63, green: 0.40, blue: 0.60)
+    case .communication: return Paper.adaptive((0.25, 0.48, 0.65), (0.47, 0.70, 0.89))
+    case .social: return Paper.adaptive((0.63, 0.40, 0.60), (0.82, 0.58, 0.80))
     case .entertainment: return Paper.orange
-    case .learning: return Color(red: 0.55, green: 0.57, blue: 0.28)
-    case .utilities: return Color(red: 0.56, green: 0.48, blue: 0.37)
-    case .finance: return Color(red: 0.24, green: 0.43, blue: 0.37)
-    case .shopping: return Color(red: 0.72, green: 0.48, blue: 0.25)
-    case .news: return Color(red: 0.40, green: 0.44, blue: 0.62)
-    case .other: return Color(red: 0.57, green: 0.59, blue: 0.56)
+    case .music: return Paper.teal
+    case .audio: return Paper.adaptive((0.44, 0.46, 0.62), (0.65, 0.66, 0.86))
+    case .learning: return Paper.adaptive((0.55, 0.57, 0.28), (0.75, 0.77, 0.45))
+    case .utilities: return Paper.adaptive((0.56, 0.48, 0.37), (0.76, 0.68, 0.55))
+    case .finance: return Paper.adaptive((0.24, 0.43, 0.37), (0.40, 0.68, 0.57))
+    case .shopping: return Paper.adaptive((0.72, 0.48, 0.25), (0.89, 0.68, 0.43))
+    case .news: return Paper.adaptive((0.40, 0.44, 0.62), (0.59, 0.64, 0.86))
+    case .other: return Paper.adaptive((0.57, 0.59, 0.56), (0.63, 0.67, 0.62))
     }
   }
 

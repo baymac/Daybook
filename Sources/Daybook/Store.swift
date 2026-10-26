@@ -8,11 +8,18 @@ struct ActivitySession: Identifiable, Codable {
   let domain: String?
   let start: Date
   let end: Date
+  var mediaKind: MediaKind? = nil
+  var usageKey: String {
+    var key = (domain ?? bundleID).lowercased()
+    if key.hasPrefix("www.") { key = String(key.dropFirst(4)) }
+    return (mediaKind == .music ? "music:" : mediaKind == .audio ? "audio:" : "") + key
+  }
   var duration: TimeInterval { max(0, end.timeIntervalSince(start)) }
 }
 
 enum Category: String, CaseIterable, Codable {
-  case productivity, communication, social, entertainment, learning, utilities, finance, shopping,
+  case productivity, communication, social, entertainment, music, audio, learning, utilities,
+    finance, shopping,
     news, other
 }
 
@@ -64,8 +71,19 @@ final class ActivityStore {
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, bundle_id TEXT NOT NULL, app_name TEXT NOT NULL, domain TEXT, start REAL NOT NULL, end REAL NOT NULL CHECK(end>start), origin TEXT NOT NULL DEFAULT 'legacy'); CREATE INDEX IF NOT EXISTS activity_dates ON activity(start,end); CREATE TABLE IF NOT EXISTS categories(key TEXT PRIMARY KEY, category TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imports(fingerprint TEXT PRIMARY KEY);"
       )
       try execute(
-        "CREATE TABLE IF NOT EXISTS video(id INTEGER PRIMARY KEY, domain TEXT NOT NULL, start REAL NOT NULL, end REAL NOT NULL CHECK(end>start)); CREATE INDEX IF NOT EXISTS video_dates ON video(start,end);"
+        "CREATE TABLE IF NOT EXISTS media(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, bundle_id TEXT NOT NULL, app_name TEXT NOT NULL, domain TEXT, start REAL NOT NULL, end REAL NOT NULL CHECK(end>start)); CREATE INDEX IF NOT EXISTS media_dates ON media(start,end);"
       )
+      let legacy = try statement(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='video'")
+      let hasLegacyVideo = sqlite3_step(legacy) == SQLITE_ROW
+      sqlite3_finalize(legacy)
+      if hasLegacyVideo {
+        try transaction {
+          try execute(
+            "INSERT INTO media(kind,bundle_id,app_name,domain,start,end) SELECT 'video','daybook.video','Video playback',domain,start,end FROM video; DROP TABLE video;"
+          )
+        }
+      }
       try migrateActivityOrigin()
       try normalizeExistingCategoryKeys()
     } catch {
@@ -316,62 +334,89 @@ final class ActivityStore {
   }
 
   func appendVideo(domain: String, start: Date, end: Date) throws {
+    try appendMedia(MediaSession(id: 0, domain: domain, start: start, end: end))
+  }
+
+  func appendMedia(_ session: MediaSession) throws {
     try serialized {
-      try validate(start, end)
-      guard let canonical = PlaybackProtocol.canonicalDomain(domain) else {
-        throw StoreError.database("Invalid video domain")
+      try validate(session.start, session.end)
+      let host: String?
+      if let domain = session.domain {
+        guard let canonical = PlaybackProtocol.canonicalDomain(domain) else {
+          throw StoreError.database("Invalid media domain")
+        }
+        host = canonical.hasPrefix("www.") ? String(canonical.dropFirst(4)) : canonical
+      } else {
+        host = nil
       }
-      let host = canonical.hasPrefix("www.") ? String(canonical.dropFirst(4)) : canonical
+      guard !session.bundleID.isEmpty else { throw StoreError.database("Invalid media app") }
       try transaction {
         let query = try statement(
-          "SELECT id,start,end FROM video WHERE domain=? AND end>=? AND start<=? ORDER BY start")
-        bind(host, 1, to: query)
-        sqlite3_bind_double(query, 2, start.timeIntervalSince1970)
-        sqlite3_bind_double(query, 3, end.timeIntervalSince1970)
-        var a = start
-        var b = end
+          "SELECT id,start,end FROM media WHERE kind=? AND bundle_id=? AND domain IS ? AND end>=? AND start<=? ORDER BY start"
+        )
+        bind(session.kind.rawValue, 1, to: query)
+        bind(session.bundleID.lowercased(), 2, to: query)
+        if let host { bind(host, 3, to: query) } else { sqlite3_bind_null(query, 3) }
+        sqlite3_bind_double(query, 4, session.start.timeIntervalSince1970)
+        sqlite3_bind_double(query, 5, session.end.timeIntervalSince1970)
+        var a = session.start
+        var b = session.end
         var ids: [Int64] = []
-        var result = sqlite3_step(query)
-        while result == SQLITE_ROW {
+        var status = sqlite3_step(query)
+        while status == SQLITE_ROW {
           ids.append(sqlite3_column_int64(query, 0))
           a = min(a, Date(timeIntervalSince1970: sqlite3_column_double(query, 1)))
           b = max(b, Date(timeIntervalSince1970: sqlite3_column_double(query, 2)))
-          result = sqlite3_step(query)
+          status = sqlite3_step(query)
         }
         sqlite3_finalize(query)
-        guard result == SQLITE_DONE else { throw failure() }
-        for id in ids { try execute("DELETE FROM video WHERE id=\(id)") }
-        let insert = try statement("INSERT INTO video(domain,start,end) VALUES(?,?,?)")
+        guard status == SQLITE_DONE else { throw failure() }
+        for id in ids { try execute("DELETE FROM media WHERE id=\(id)") }
+        let insert = try statement(
+          "INSERT INTO media(kind,bundle_id,app_name,domain,start,end) VALUES(?,?,?,?,?,?)")
         defer { sqlite3_finalize(insert) }
-        bind(host, 1, to: insert)
-        sqlite3_bind_double(insert, 2, a.timeIntervalSince1970)
-        sqlite3_bind_double(insert, 3, b.timeIntervalSince1970)
+        bind(session.kind.rawValue, 1, to: insert)
+        bind(session.bundleID.lowercased(), 2, to: insert)
+        bind(session.appName, 3, to: insert)
+        if let host { bind(host, 4, to: insert) } else { sqlite3_bind_null(insert, 4) }
+        sqlite3_bind_double(insert, 5, a.timeIntervalSince1970)
+        sqlite3_bind_double(insert, 6, b.timeIntervalSince1970)
         guard sqlite3_step(insert) == SQLITE_DONE else { throw failure() }
       }
     }
   }
 
-  func videoSessions(from: Date, to: Date) throws -> [VideoSession] {
+  func mediaSessions(from: Date, to: Date) throws -> [MediaSession] {
     try serialized {
       guard to > from else { return [] }
       let query = try statement(
-        "SELECT id,domain,start,end FROM video WHERE end>? AND start<? ORDER BY start,id")
+        "SELECT id,kind,bundle_id,app_name,domain,start,end FROM media WHERE end>? AND start<? ORDER BY start,id"
+      )
       defer { sqlite3_finalize(query) }
       sqlite3_bind_double(query, 1, from.timeIntervalSince1970)
       sqlite3_bind_double(query, 2, to.timeIntervalSince1970)
-      var result: [VideoSession] = []
+      var rows: [MediaSession] = []
       var status = sqlite3_step(query)
       while status == SQLITE_ROW {
-        result.append(
-          VideoSession(
-            id: sqlite3_column_int64(query, 0), domain: string(query, 1),
-            start: max(from, Date(timeIntervalSince1970: sqlite3_column_double(query, 2))),
-            end: min(to, Date(timeIntervalSince1970: sqlite3_column_double(query, 3)))))
+        guard let kind = MediaKind(rawValue: string(query, 1)) else {
+          throw StoreError.database("Unknown media type")
+        }
+        rows.append(
+          MediaSession(
+            id: sqlite3_column_int64(query, 0),
+            domain: sqlite3_column_type(query, 4) == SQLITE_NULL ? nil : string(query, 4),
+            start: max(from, Date(timeIntervalSince1970: sqlite3_column_double(query, 5))),
+            end: min(to, Date(timeIntervalSince1970: sqlite3_column_double(query, 6))), kind: kind,
+            bundleID: string(query, 2), appName: string(query, 3)))
         status = sqlite3_step(query)
       }
       guard status == SQLITE_DONE else { throw failure() }
-      return result
+      return rows
     }
+  }
+
+  func videoSessions(from: Date, to: Date) throws -> [MediaSession] {
+    try mediaSessions(from: from, to: to).filter { $0.kind == .video }
   }
 
   func category(for key: String) -> Category {
@@ -439,6 +484,10 @@ final class ActivityStore {
   /// Offline defaults use known products, not broad word matching. Subdomains
   /// inherit only an explicit domain rule; lookalike names cannot match it.
   private static func automaticCategory(for key: String) -> Category {
+    if key.hasPrefix("audio:") { return .audio }
+    if key.hasPrefix("music:") || MusicSites.isDedicated(key.lowercased()) { return .music }
+    if MusicSites.isMusicApp(key) { return .music }
+
     let value = normalizedKey(key)
     let installedApplications: [(Category, Set<String>)] = [
       (
@@ -715,11 +764,12 @@ final class ActivityStore {
           String(session.duration), "foreground",
         ].map(quoted).joined(separator: ","))
     }
-    for session in try videoSessions(from: from, to: to) {
+    for session in try mediaSessions(from: from, to: to) {
       lines.append(
         [
-          "Video playback", "daybook.video", session.domain, formatter.string(from: session.start),
-          formatter.string(from: session.end), String(session.duration), "video",
+          session.appName, session.bundleID, session.domain ?? "",
+          formatter.string(from: session.start),
+          formatter.string(from: session.end), String(session.duration), session.kind.rawValue,
         ].map(quoted).joined(separator: ","))
     }
     return lines.joined(separator: "\r\n") + "\r\n"

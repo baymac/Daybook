@@ -1,12 +1,32 @@
 import CryptoKit
 import Foundation
 
-struct VideoSession: Identifiable {
+enum MediaKind: String, Codable { case video, music, audio }
+
+struct MediaSession: Identifiable {
   let id: Int64
-  let domain: String
+  let kind: MediaKind
+  let bundleID: String
+  let appName: String
+  let domain: String?
   let start: Date
   let end: Date
   var duration: TimeInterval { max(0, end.timeIntervalSince(start)) }
+  var key: String {
+    (kind == .music ? "music:" : kind == .audio ? "audio:" : "") + (domain ?? bundleID.lowercased())
+  }
+  init(
+    id: Int64, domain: String?, start: Date, end: Date, kind: MediaKind = .video,
+    bundleID: String = "daybook.video", appName: String = "Video playback"
+  ) {
+    self.id = id
+    self.domain = domain
+    self.start = start
+    self.end = end
+    self.kind = kind
+    self.bundleID = bundleID
+    self.appName = appName
+  }
 }
 
 struct PlaybackPacket: Codable {
@@ -15,15 +35,19 @@ struct PlaybackPacket: Codable {
   let domain: String
   let playing: Bool
   let sentAt: Double
+  var context: BrowserPlaybackContext? = nil
+  var messageID: String? = nil
 }
 
-struct SignedPlaybackPacket: Codable {
-  let payload: String
-  let mac: String
+struct EncryptedPlaybackPacket: Codable {
+  let version: Int
+  let nonce: String
+  let ciphertext: String
 }
 
 enum PlaybackProtocol {
-  static let notification = Notification.Name("local.daybook.videoHeartbeat.v1")
+  static let notification = Notification.Name("local.daybook.mediaHeartbeat.v2")
+  static let authenticatedData = Data("local.daybook.playback.v2".utf8)
   static func newPairingCode() -> String {
     SymmetricKey(size: .bits256).withUnsafeBytes {
       Data($0).map { String(format: "%02x", $0) }.joined()
@@ -45,18 +69,26 @@ enum PlaybackProtocol {
 
   static func decode(_ object: String, code: String, now: Date) -> PlaybackPacket? {
     guard object.utf8.count <= 8192, let data = object.data(using: .utf8),
-      let wrapper = try? JSONDecoder().decode(SignedPlaybackPacket.self, from: data),
-      wrapper.payload.count <= 4096, let payload = Data(base64Encoded: wrapper.payload),
-      let key = keyData(code), let mac = keyData(wrapper.mac),
-      HMAC<SHA256>.isValidAuthenticationCode(
-        mac, authenticating: payload, using: SymmetricKey(data: key)),
-      let packet = try? JSONDecoder().decode(PlaybackPacket.self, from: payload),
-      packet.version == 1, packet.session.count <= 128, !packet.session.isEmpty,
+      let wrapper = try? JSONDecoder().decode(EncryptedPlaybackPacket.self, from: data),
+      wrapper.version == 2,
+      wrapper.nonce.count == 16, let nonce = Data(base64Encoded: wrapper.nonce), nonce.count == 12,
+      wrapper.ciphertext.count <= 5500, let sealed = Data(base64Encoded: wrapper.ciphertext),
+      sealed.count >= 16,
+      let key = keyData(code),
+      let box = try? AES.GCM.SealedBox(
+        nonce: AES.GCM.Nonce(data: nonce), ciphertext: sealed.dropLast(16), tag: sealed.suffix(16)),
+      let payload = try? AES.GCM.open(
+        box, using: SymmetricKey(data: key), authenticating: authenticatedData),
+      var packet = try? JSONDecoder().decode(PlaybackPacket.self, from: payload),
+      packet.version == 1 || packet.version == 2,
+      packet.version != 2 || packet.context?.valid == true, packet.session.count <= 128,
+      !packet.session.isEmpty,
       packet.session.range(of: "^[a-zA-Z0-9_.:-]+$", options: .regularExpression) != nil,
       packet.sentAt.isFinite, now.timeIntervalSince1970 - packet.sentAt >= -5,
       now.timeIntervalSince1970 - packet.sentAt <= 15,
       canonicalDomain(packet.domain) == packet.domain
     else { return nil }
+    packet.messageID = wrapper.nonce
     return packet
   }
 
@@ -71,26 +103,61 @@ enum PlaybackProtocol {
   }
 }
 
-/// Heartbeats prove an interval; a missing heartbeat never grants an open lease.
+/// Retain message identities across pause/resume so captured ciphertext cannot be replayed.
+struct PlaybackReplayWindow {
+  private var seen: [String: Date] = [:]
+  mutating func accept(_ id: String, now: Date) -> Bool {
+    seen = seen.filter { now.timeIntervalSince($0.value) <= 20 }
+    guard seen[id] == nil, seen.count < 4096 else { return false }
+    seen[id] = now
+    return true
+  }
+}
+
+/// Two recent, matching signals prove an interval. A mode change never fills a visibility gap.
 struct PlaybackLedger {
-  private var states: [String: (domain: String, date: Date)] = [:]
+  private struct State {
+    let kind: MediaKind
+    let bundleID: String
+    let appName: String
+    let domain: String?
+    let date: Date
+  }
+  private var states: [String: State] = [:]
   mutating func clear() { states.removeAll() }
   mutating func discard(_ session: String) { states.removeValue(forKey: session) }
-  mutating func consume(_ packet: PlaybackPacket, now: Date) -> VideoSession? {
-    let date = min(now, Date(timeIntervalSince1970: packet.sentAt))
+  mutating func discardUnless(_ session: String, kind: MediaKind?) {
+    if states[session]?.kind != kind { states.removeValue(forKey: session) }
+  }
+  mutating func consume(_ packet: PlaybackPacket, now: Date, kind: MediaKind? = .video)
+    -> MediaSession?
+  {
+    consume(
+      session: packet.session, bundleID: "daybook.video", appName: "Video playback",
+      domain: packet.domain, kind: kind, playing: packet.playing,
+      date: Date(timeIntervalSince1970: packet.sentAt), now: now)
+  }
+  mutating func consume(
+    session: String, bundleID: String, appName: String, domain: String?, kind: MediaKind?,
+    playing: Bool, date inputDate: Date, now: Date
+  ) -> MediaSession? {
+    let date = min(now, inputDate)
     states = states.filter { now.timeIntervalSince($0.value.date) <= 15 }
-    let old = states[packet.session]
+    let old = states[session]
     if let old, date <= old.date { return nil }
-    if packet.playing {
+    if playing, let kind {
       guard states.count < 128 || old != nil else { return nil }
-      states[packet.session] = (packet.domain, date)
+      states[session] = State(
+        kind: kind, bundleID: bundleID, appName: appName, domain: domain, date: date)
     } else {
-      states.removeValue(forKey: packet.session)
+      states.removeValue(forKey: session)
     }
-    guard let old, old.domain == packet.domain,
-      date > old.date, date.timeIntervalSince(old.date) <= 12
+    guard let old, old.domain == domain, old.bundleID == bundleID,
+      !playing || old.kind == kind, date > old.date, date.timeIntervalSince(old.date) <= 12
     else { return nil }
-    return VideoSession(id: 0, domain: packet.domain, start: old.date, end: date)
+    return MediaSession(
+      id: 0, domain: domain, start: old.date, end: date, kind: old.kind, bundleID: bundleID,
+      appName: appName)
   }
 }
 

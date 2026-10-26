@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 
 
 class BuildScriptTests(unittest.TestCase):
@@ -75,8 +76,15 @@ printf 'fresh executable\\n' > "$output"
         )
 
     def test_running_app_is_never_modified(self):
-        shutil.copyfile("/bin/sleep", self.binary)
-        self.binary.chmod(0o755)
+        # A copied Apple platform binary can be killed by macOS before the
+        # assertion. Use an ordinary locally built process for this regression.
+        subprocess.run(
+            ["xcrun", "clang", "-x", "c", "-", "-o", str(self.binary)],
+            input="#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
         before = hashlib.sha256(self.binary.read_bytes()).digest()
         process = subprocess.Popen([str(self.binary), "30"])
         try:
@@ -104,6 +112,22 @@ printf 'fresh executable\\n' > "$output"
         self.assertNotEqual(self.binary.stat().st_ino, old_inode)
         self.assertFalse((self.app / "stale-resource").exists())
         self.assertTrue((self.app / "Contents/Info.plist").is_file())
+
+    def test_local_pairing_is_excluded_from_distributed_bundles(self):
+        pairing = self.source / "Extension/local-pairing.json"
+        pairing.write_text('{"pairingCode":"local-test-only"}')
+        result = self.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(
+            (self.app / "Contents/Resources/VideoExtension/local-pairing.json").exists()
+        )
+        with zipfile.ZipFile(
+            self.app / "Contents/Resources/Daybook-Helper.zip"
+        ) as archive:
+            self.assertFalse(
+                any(name.endswith("local-pairing.json") for name in archive.namelist())
+            )
+        self.assertTrue(pairing.exists())
 
     def test_default_build_stays_inside_the_repository(self):
         self.binary.write_text("existing app outside repository\n")

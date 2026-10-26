@@ -15,14 +15,33 @@ import Foundation
     }
     func signed(_ p: PlaybackPacket) -> String {
       let data = try! JSONEncoder().encode(p)
-      let mac = HMAC<SHA256>.authenticationCode(
-        for: data, using: SymmetricKey(data: PlaybackProtocol.keyData(code)!)
-      ).map { String(format: "%02x", $0) }.joined()
+      let box = try! AES.GCM.seal(
+        data, using: SymmetricKey(data: PlaybackProtocol.keyData(code)!),
+        authenticating: PlaybackProtocol.authenticatedData)
       return String(
         data: try! JSONEncoder().encode(
-          SignedPlaybackPacket(payload: data.base64EncodedString(), mac: mac)), encoding: .utf8)!
+          EncryptedPlaybackPacket(
+            version: 2,
+            nonce: box.nonce.withUnsafeBytes { Data($0).base64EncodedString() },
+            ciphertext: (box.ciphertext + box.tag).base64EncodedString())), encoding: .utf8)!
+
     }
-    assert(PlaybackProtocol.decode(signed(packet(0)), code: code, now: now) != nil)
+    let encrypted = signed(packet(0))
+    assert(!encrypted.contains("youtube.com") && !encrypted.contains("test:1"))
+    assert(PlaybackProtocol.decode(encrypted, code: code, now: now) != nil)
+    var tampered = try! JSONDecoder().decode(
+      EncryptedPlaybackPacket.self, from: Data(encrypted.utf8))
+    var bytes = Data(base64Encoded: tampered.ciphertext)!
+    bytes[0] ^= 1
+    tampered = EncryptedPlaybackPacket(
+      version: 2, nonce: tampered.nonce, ciphertext: bytes.base64EncodedString())
+    assert(
+      PlaybackProtocol.decode(
+        String(data: try! JSONEncoder().encode(tampered), encoding: .utf8)!, code: code, now: now)
+        == nil)
+    assert(
+      PlaybackProtocol.decode(
+        "{\"payload\":\"plaintext\",\"mac\":\"legacy\"}", code: code, now: now) == nil)
     assert(
       PlaybackProtocol.decode(signed(packet(0)), code: String(repeating: "cd", count: 32), now: now)
         == nil)
@@ -35,6 +54,12 @@ import Foundation
       PlaybackProtocol.decode(
         signed(packet(0, true, "youtube.com", "../../path")), code: code, now: now) == nil)
 
+    var replay = PlaybackReplayWindow()
+    assert(replay.accept("one", now: now))
+    assert(!replay.accept("one", now: now.addingTimeInterval(10)))
+    assert(replay.accept("two", now: now.addingTimeInterval(10)))
+    assert(replay.accept("one", now: now.addingTimeInterval(21)))
+    // Expired messages are independently rejected by the authenticated timestamp check.
     var ledger = PlaybackLedger()
     assert(ledger.consume(packet(0), now: now) == nil)
     var intervals: [DateInterval] = []
