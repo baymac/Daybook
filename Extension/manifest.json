@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Daybook Video",
+  "version": "0.1.0",
+  "description": "Counts actual video playback locally in Daybook, including background tabs and embedded players.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr+qpBjN/fy7nX58pbK23GO8RZ59zONoHZx0Q7x30V3VDnh3uM/xgYwGVdeP3V0GxZMBwl61xW2OQXVzo2x3gXAcHLzRQ1UHDXPwim9cY4/BCIQvGMoiV3KQ5HJl4HoLDIuWwbl53xbe2U4LvRb/j1Vo1eaxrkq7Lr4HmOX5Tyxh5MhOE2dLcL3+vSnj7Qz6VqLlN7CDxaPa3Ixywdt/WYNCy3ANyDA6rQisJEWoi+44wrlNzjG3P8ep1a+cNMORiCLTz5uzFIPhV9CBHuMv3Hurksd0bwJgRQSZ1VVSh9htUaTgNzKsQ8Arfw7VEh8vIKuJtN/wyU0heYhLAD7BjfQIDAQAB",
+  "permissions": ["nativeMessaging", "storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["playback-core.js", "content.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Daybook Video setup"
+  }
+}

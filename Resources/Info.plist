@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Daybook</string>
+	<key>CFBundleExecutable</key>
+	<string>Daybook</string>
+	<key>CFBundleIconFile</key>
+	<string>Daybook.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.daybook.mac</string>
+	<key>CFBundleName</key>
+	<string>Daybook</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.1</string>
+	<key>CFBundleVersion</key>
+	<string>4</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Optional website tracking reads the URL of your active browser tab and retains only the domain. Daybook never reads page content or sends this data online.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Daybook · Personal local build, 2026</string>
+</dict>
+</plist>

@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Daybook video setup</title>
+    <style>
+      body {
+        font: 17px system-ui;
+        line-height: 1.7;
+        max-width: 760px;
+        margin: 55px auto;
+        padding: 0 24px;
+        color: #283632;
+        background: #f7f5ee;
+      }
+      code {
+        background: #e8e8df;
+        padding: 3px 7px;
+        border-radius: 4px;
+      }
+      li {
+        margin: 18px 0;
+      }
+      h1 {
+        font: 36px Georgia;
+      }
+      small {
+        color: #52625c;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Count video while you work</h1>
+    <p>
+      Brave, Chrome and Edge can report real video progress to Daybook. This
+      works in background tabs and embedded frames. A playing video is counted
+      even without keyboard or mouse input.
+    </p>
+    <ol>
+      <li>
+        In Daybook Settings, click <b>Show extension folder</b>. Keep that
+        folder in its current location.
+      </li>
+      <li>
+        For Brave, double-click <code>install-bridge.command</code> in that
+        folder. This installs a local native-messaging manifest. It does not
+        modify browser security settings. For Chrome or Edge, run
+        <code>python3 install_bridge.py --browser chrome</code> or
+        <code>--browser edge</code> from the folder.
+      </li>
+      <li>
+        Open <code>brave://extensions</code> (or
+        <code>chrome://extensions</code> / <code>edge://extensions</code>). Turn
+        on <b>Developer mode</b>, choose <b>Load unpacked</b>, and select the
+        VideoExtension folder containing manifest.json. Review the browser's
+        website-access permissions.
+      </li>
+      <li>
+        In Daybook Settings, click <b>Copy pairing code</b>. Open the Daybook
+        Video extension's options (click its toolbar icon), paste the code, and
+        save with sending enabled.
+      </li>
+      <li>
+        Reload the stream tab once. Keep Daybook running with tracking on and
+        Count video playback enabled. Its Settings status will show the detected
+        domain.
+      </li>
+    </ol>
+    <p>
+      <b>What the permission means:</b> detecting embedded players needs
+      extension access to all websites, because players may be hosted on a
+      different domain. The implementation only inspects video playback
+      properties, and sends the top-level domain, play/pause status and timing
+      to a local helper. It does not send data to an internet service or
+      save/send titles, text, screenshots, full page URLs or audio samples.
+      Private-window access is not enabled.
+    </p>
+    <p>
+      <b>How time is counted:</b> a two-hour video plus two hours of work
+      happening at the same time counts as two hours of computer usage. Video
+      playback and foreground time are also shown separately. Per-app/site and
+      category activity totals may overlap. Pauses, lost signals, sleeping and
+      stopped tracking do not create an unlimited playback session.
+    </p>
+    <p>
+      <small
+        >Detection begins after setup and a tab reload. Old missing playback
+        cannot be reconstructed. Browser throttling or unusual players can delay
+        signals; undetected gaps are not guessed. Only HTML video in regular
+        HTTP(S) pages is supported, not native player apps, browser-internal
+        pages or audio-only elements. Use a stable app location and re-run the
+        bridge installer if you move Daybook. Closing Daybook stops saving
+        activity.</small
+      >
+    </p>
+  </body>
+</html>
