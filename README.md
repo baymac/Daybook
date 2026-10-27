@@ -10,7 +10,7 @@ Activity stays on your Mac. No telemetry, accounts, or activity uploads.
 
 ## Set up
 
-Download the app from [Releases](https://github.com/baymac/Daybook/releases), then move it to Applications. Requires Apple silicon and macOS 14+. Builds are locally signed, not notarized.
+Download the Apple-notarized app ZIP from [Releases](https://github.com/baymac/Daybook/releases), unzip it, then move Daybook to Applications. Requires Apple silicon and macOS 14+.
 
 Or build with Xcode command line tools:
 
