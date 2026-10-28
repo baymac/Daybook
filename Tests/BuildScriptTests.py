@@ -53,6 +53,19 @@ printf 'fresh executable\\n' > "$output"
 """
         )
         compiler.chmod(0o755)
+        merger = self.tools / "lipo"
+        merger.write_text(
+            """#!/bin/bash
+shift
+first="$1"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-output" ]; then shift; output="$1"; fi
+  shift
+done
+cp "$first" "$output"
+"""
+        )
+        merger.chmod(0o755)
         signer = self.tools / "codesign"
         signer.write_text("#!/bin/bash\nexit 0\n")
         signer.chmod(0o755)

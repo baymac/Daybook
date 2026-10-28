@@ -29,14 +29,22 @@ PACKAGE_ROOT="$(mktemp -d "$BUILD/package.XXXXXX")"
 trap 'rm -rf "$PACKAGE_ROOT"' EXIT
 STAGED_APP="$PACKAGE_ROOT/Daybook.app"
 mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources"
-swiftc -swift-version 5 -O -parse-as-library -target arm64-apple-macosx14.0 \
-  "$ROOT"/Sources/Daybook/*.swift -lsqlite3 -o "$STAGED_APP/Contents/MacOS/Daybook"
+for ARCH in arm64 x86_64; do
+  SLICE="$PACKAGE_ROOT/$ARCH"
+  mkdir -p "$SLICE"
+  swiftc -swift-version 5 -O -parse-as-library -target "$ARCH-apple-macosx14.0" \
+    "$ROOT"/Sources/Daybook/*.swift -lsqlite3 -o "$SLICE/Daybook"
+  swiftc -swift-version 5 -O -target "$ARCH-apple-macosx14.0" \
+    "$ROOT/Sources/VideoBridge/VideoBridge.swift" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+    -Xlinker "$ROOT/Sources/VideoBridge/Info.plist" \
+    -o "$SLICE/DaybookVideoBridge"
+done
+lipo -create "$PACKAGE_ROOT/arm64/Daybook" "$PACKAGE_ROOT/x86_64/Daybook" \
+  -output "$STAGED_APP/Contents/MacOS/Daybook"
+lipo -create "$PACKAGE_ROOT/arm64/DaybookVideoBridge" "$PACKAGE_ROOT/x86_64/DaybookVideoBridge" \
+  -output "$STAGED_APP/Contents/MacOS/DaybookVideoBridge"
 cp "$ROOT/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
-swiftc -swift-version 5 -O -target arm64-apple-macosx14.0 \
-  "$ROOT/Sources/VideoBridge/VideoBridge.swift" \
-  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
-  -Xlinker "$ROOT/Sources/VideoBridge/Info.plist" \
-  -o "$STAGED_APP/Contents/MacOS/DaybookVideoBridge"
 codesign --force --sign "$SIGNING_IDENTITY" --identifier local.daybook.video.bridge "${SIGNING_OPTIONS[@]}" \
   --entitlements "$ROOT/Sources/VideoBridge/Bridge.entitlements" \
   "$STAGED_APP/Contents/MacOS/DaybookVideoBridge"

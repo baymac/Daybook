@@ -10,7 +10,7 @@ Activity stays on your Mac. No telemetry, accounts, or activity uploads.
 
 ## Set up
 
-Download the Apple-notarized app ZIP from [Releases](https://github.com/baymac/Daybook/releases), unzip it, then move Daybook to Applications. Requires Apple silicon and macOS 14+.
+Download the Apple-notarized DMG from [Releases](https://github.com/baymac/Daybook/releases), open it, and drag Daybook to Applications. One installer supports Apple silicon and Intel Macs running macOS 14+.
 
 Or build with Xcode command line tools:
 
